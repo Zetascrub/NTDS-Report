@@ -1,23 +1,19 @@
 #!/usr/bin/env python3
-"""
-pwstats.py – NTLM-password statistics for cracked hashes
-┌── Inputs ─────────────────────────────────────────┐
-│ 1. cracked_file   – NTLM_HASH:plaintext           │
-│ 2. ntds_file*     – Impacket pwdump (user:…:NTLM) │
-└────────────────────────────────────────────────────┘
-Outputs to STDOUT (and report.txt) a summary like:
-    Total entries  …%
-    Top-10 base words
-    Length histogram
-    Character-set breakdown
-    Capital/number/symbol patterns, etc.
-Author: you & FRIDAY
+"""NTLM password statistics generator.
+
+The script parses a file with cracked NTLM hashes (``NTLM_HASH:password``)
+and optionally a list of all domain hashes extracted from ``ntds.dmp``.  It
+prints statistics to ``stdout`` and writes the same information to a report
+file.
 """
 
-import re
-import sys
+from __future__ import annotations
+
+import argparse
 import collections
+import re
 from pathlib import Path
+from typing import Iterable, Iterator, Optional, Set
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -25,49 +21,61 @@ DIGITS_RE = re.compile(r"\d+$")
 TOP_WORD_RE = re.compile(r"^[A-Za-z]+")
 
 def character_class(password: str) -> str:
+    """Return a label describing the character classes used in ``password``."""
+
     classes = {
         "lower": bool(re.search(r"[a-z]", password)),
         "upper": bool(re.search(r"[A-Z]", password)),
-        "num":   bool(re.search(r"[0-9]", password)),
-        "sym":   bool(re.search(r"[^A-Za-z0-9]", password)),
+        "num": bool(re.search(r"[0-9]", password)),
+        "sym": bool(re.search(r"[^A-Za-z0-9]", password)),
     }
+
     key = (
-        ("lower"  if classes["lower"]  and not classes["upper"] else
-         "upper"  if classes["upper"]  and not classes["lower"] else
+        ("lower" if classes["lower"] and not classes["upper"] else
+         "upper" if classes["upper"] and not classes["lower"] else
          "mixedalpha")
-        + ("num"  if classes["num"] else "")
+        + ("num" if classes["num"] else "")
         + ("special" if classes["sym"] else "")
     )
+
     return key or "other"
 
 def first_cap_last_symbol(password: str) -> bool:
+    """Check for an initial capital letter and a non-alphanumeric suffix."""
+
     return (
-        len(password) >= 2 and
-        password[0].isupper() and
-        not password[-1].isalnum()
+        len(password) >= 2
+        and password[0].isupper()
+        and not password[-1].isalnum()
     )
 
 def first_cap_last_num(password: str) -> bool:
+    """Check for an initial capital letter and a trailing digit."""
+
     return (
-        len(password) >= 2 and
-        password[0].isupper() and
-        password[-1].isdigit()
+        len(password) >= 2
+        and password[0].isupper()
+        and password[-1].isdigit()
     )
 
 # ─── Core ─────────────────────────────────────────────────────────────────────
 
-def load_cracked(path):
-    with open(path, encoding="utf-8", errors="ignore") as fh:
+def load_cracked(path: Path) -> Iterator[tuple[str, str]]:
+    """Yield ``(hash, password)`` tuples from a cracked hash file."""
+
+    with path.open(encoding="utf-8", errors="ignore") as fh:
         for line in fh:
             line = line.rstrip()
-            if ":" not in line:                      # skip malformed lines
+            if ":" not in line:
                 continue
             ntlm, plaintext = line.split(":", 1)
             yield ntlm.lower(), plaintext
 
-def load_ntds(path):
-    ntlm_hashes = set()
-    with open(path, encoding="utf-8", errors="ignore") as fh:
+def load_ntds(path: Path) -> Set[str]:
+    """Return a set of NTLM hashes extracted from ``ntds.dmp``."""
+
+    ntlm_hashes: Set[str] = set()
+    with path.open(encoding="utf-8", errors="ignore") as fh:
         for line in fh:
             parts = line.rstrip().split(":")
             if len(parts) > 3:
@@ -75,7 +83,9 @@ def load_ntds(path):
                 ntlm_hashes.add(ntlm)
     return ntlm_hashes
 
-def main(cracked_file, ntds_file=None):
+def generate_report(cracked_file: Path, ntds_file: Optional[Path] = None) -> str:
+    """Return a formatted statistics report."""
+
     cracked = dict(load_cracked(cracked_file))
     total_cracked = len(cracked)
 
@@ -169,16 +179,19 @@ def main(cracked_file, ntds_file=None):
     for k, v in char_sets.most_common():
         out.append(f"{k:<20}: {v} ({v/total*100:.2f}%)")
 
-    report = "\n".join(out)
-    print(report)
+    return "\n".join(out)
 
-    # Also save to file
-    Path("report.txt").write_text(report)
+def main(argv: Optional[Iterable[str]] = None) -> None:
+    parser = argparse.ArgumentParser(description="Generate statistics for cracked NTLM hashes")
+    parser.add_argument("cracked", type=Path, help="File containing NTLM_HASH:password pairs")
+    parser.add_argument("ntds", nargs="?", type=Path, help="Optional ntds dump to calculate crack percentage")
+    parser.add_argument("-o", "--output", type=Path, default=Path("report.txt"), help="Path to write the report (default: report.txt)")
+    args = parser.parse_args(argv)
+
+    report = generate_report(args.cracked, args.ntds)
+    print(report)
+    args.output.write_text(report)
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        sys.exit("Usage: pwstats.py cracked.txt [hashes.ntds]")
-    cracked_path = sys.argv[1]
-    ntds_path = sys.argv[2] if len(sys.argv) > 2 else None
-    main(cracked_path, ntds_path)
+    main()
 
